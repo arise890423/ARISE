@@ -1,0 +1,112 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function getRoomData(roomId) {
+      return get(/databases/$(database)/documents/community_rooms/$(roomId)).data;
+    }
+
+    function canAccessRoom(roomId) {
+      let room = getRoomData(roomId);
+      return isAuthenticated() && (
+        room.type == 'PUBLIC_ROOM' ||
+        (request.auth.uid in room.memberIds) ||
+        room.creatorId == request.auth.uid
+      );
+    }
+
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['name'])
+             && data.name is string
+             && data.name.size() > 0
+             && data.name.size() <= 50
+             && (!('rank' in data) || (data.rank is string && data.rank.size() <= 30))
+             && (!('level' in data) || (data.level is int && data.level >= 1 && data.level <= 150))
+             && (!('bio' in data) || (data.bio is string && data.bio.size() <= 300))
+             && (!('isOnline' in data) || data.isOnline is bool)
+             && (!('showOnlineStatus' in data) || data.showOnlineStatus is bool);
+    }
+
+    // 1. User Profiles & Presences (Protected against currency/XP tampering)
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId)
+                    && isValidUserProfile(request.resource.data)
+                    && !request.resource.data.keys().hasAny(['gold', 'crystals', 'xp', 'currentXp', 'admin', 'role', 'isSuperUser']);
+      allow update: if isOwner(userId)
+                    && isValidUserProfile(request.resource.data)
+                    && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['gold', 'crystals', 'xp', 'currentXp', 'admin', 'role', 'isSuperUser']);
+      allow delete: if false;
+    }
+
+    // 2. Community Rooms & Direct Communications
+    match /community_rooms/{roomId} {
+      // Direct and group rooms can ONLY be read by participants/members
+      allow read: if isAuthenticated() && (
+        resource.data.type == 'PUBLIC_ROOM' ||
+        request.auth.uid in resource.data.memberIds ||
+        resource.data.creatorId == request.auth.uid
+      );
+
+      allow create: if isAuthenticated()
+                    && request.resource.data.keys().hasAll(['name', 'type', 'creatorId', 'createdAt'])
+                    && request.resource.data.creatorId == request.auth.uid
+                    && request.resource.data.type in ['PUBLIC_ROOM', 'GROUP', 'DIRECT']
+                    && request.resource.data.name is string
+                    && request.resource.data.name.size() > 0
+                    && request.resource.data.name.size() <= 100
+                    && (request.resource.data.type == 'PUBLIC_ROOM' || request.auth.uid in request.resource.data.memberIds);
+
+      // Members can update recent message metadata; creatorId and room type are immutable
+      allow update: if isAuthenticated()
+                    && (resource.data.type == 'PUBLIC_ROOM' || request.auth.uid in resource.data.memberIds || resource.data.creatorId == request.auth.uid)
+                    && request.resource.data.creatorId == resource.data.creatorId
+                    && request.resource.data.type == resource.data.type;
+
+      allow delete: if isAuthenticated() && resource.data.creatorId == request.auth.uid;
+
+      // 3. Room Messages Subcollection (Isolated to room members)
+      match /messages/{messageId} {
+        allow read: if canAccessRoom(roomId);
+        allow create: if canAccessRoom(roomId)
+                      && request.resource.data.keys().hasAll(['senderId', 'text', 'createdAt'])
+                      && request.resource.data.senderId == request.auth.uid
+                      && request.resource.data.text is string
+                      && request.resource.data.text.size() > 0
+                      && request.resource.data.text.size() <= 1000;
+        allow update: if isAuthenticated() && resource.data.senderId == request.auth.uid && request.resource.data.senderId == request.auth.uid;
+        allow delete: if isAuthenticated() && (resource.data.senderId == request.auth.uid || getRoomData(roomId).creatorId == request.auth.uid);
+      }
+    }
+
+    // 4. Abuse & Spam Reports (Write-only for reporter; read-restricted to admins/backend)
+    match /reports/{reportId} {
+      allow read: if false;
+      allow create: if isAuthenticated()
+                    && request.resource.data.reporterId == request.auth.uid
+                    && request.resource.data.reason is string
+                    && request.resource.data.reason.size() > 0
+                    && request.resource.data.reason.size() <= 500;
+      allow update, delete: if false;
+    }
+
+    // 5. Purchases & Ledger (Client cannot fabricate transactions or alter balances)
+    match /purchases/{purchaseId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow write: if false;
+    }
+
+    // Default Fallthrough: Deny all unmatched paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Exclude sensitive credentials and storage from legacy full device backups -->
+    <exclude domain="sharedpref" path="arise_secure_prefs.xml" />
+    <exclude domain="sharedpref" path="arise_hunter_prefs.xml" />
+</full-backup-content>

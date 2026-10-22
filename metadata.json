@@ -1,0 +1,6 @@
+{
+  "name": "ARISE",
+  "description": "Futuristic Hunter System RPG and productivity dashboard with live missions, ranks, leveling, community, focus timer, and shop.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
